@@ -1,1 +1,1 @@
-Run the script from within dataset_creator. Creates a subset from the WCS dataset featuring more than 1.4 million images and more than 300.000 bounding boxes.
+Run the script from within dataset_creator. Creates a subset from the WCS dataset featuring more than 1.4 million images and more than 300.000 bounding boxes. The json file can be downloaded from ehre: https://lila.science/datasets/wcscameratraps.
