@@ -1,6 +1,3 @@
-# Create a function that receives a list of bounding box sizes as input and shows them on a scatter plot using matplotlib
-# The function should have the following signature:
-
 from typing import List, Tuple, Any
 import matplotlib.pyplot as plt
 import numpy as np
@@ -39,40 +36,28 @@ def plot_bounding_boxes(data: Any, data_size: Any) -> None:
                 image_bb_areas.append((image_id, area, annotation["category_id"]))
     bb_areas_dataset2 = np.array([value[1] for value in image_bb_areas])
     print(len(bb_areas_dataset2))
-    # Calculate overall min and max for bounding box sizes
+
     min_value = min(min(bb_areas_dataset1), min(bb_areas_dataset2))
     max_value = max(max(bb_areas_dataset1), max(bb_areas_dataset2))
 
     print(len(bb_areas_dataset1), len(bb_areas_dataset2))
 
-    # Define bins based on overall range
-    bins = np.linspace(min_value, max_value, num=30)  # Adjust num for desired resolution
+    bins = np.linspace(min_value, max_value, num=30) 
 
-    # Plot histograms with adjusted bins
     plt.hist(bb_areas_dataset1, bins=bins, alpha=0.5, label="Dataset Random", density=False)
     plt.hist(bb_areas_dataset2, bins=bins, alpha=0.5, label="Dataset Homogenous", density=False)
 
-    # Customize the plot
     plt.xlabel("Bounding Box Size (pixels)")
     plt.ylabel("Frequency")
     plt.title("Dataset Comparison (Normalized)")
     plt.legend()
     plt.show()
 
-# Test the function
-# with open('./wildcamera_dataset_random/wcs_20220205_bboxes_with_classes 2_1_20240402212650_Mq6SLJWc.json') as f:
-#     data = json.load(f)
-# with open('./wildcamera_dataset_bb_size/wcs_20220205_bboxes_with_classes 2_1_20240401214607_QGQGLFWf.json') as f:
-#     data_size = json.load(f)
-# plot_bounding_boxes(data, data_size)
-
-#print(len(data["annotations"]), len(data_size["annotations"]))
 
 import logging
 import os
 import cv2
 
-# categories: - mitu tuberosum, unknown bird, equus quagga, crax rubra, pecari tajacu, leopardus pardalis, dasyprocta punctata, madoqua guentheri, loxodonta africana, aepyceros melampus
 categories = ["mitu tuberosum", "unknown bird", "equus quagga", "crax rubra", "pecari tajacu", "leopardus pardalis", "dasyprocta punctata", "madoqua guentheri", "loxodonta africana", "aepyceros melampus"]
 
 json_filee = "1234567.json"
@@ -87,11 +72,8 @@ def create_label_files() -> None:
             None
         """
         try:
-            #with open("12345678.json", 'r') as json_file:
-            #    data = json.load(json_file)
             with open(json_filee, 'r') as json_file:
                 data = json.load(json_file)
-            # first empty the folder
             label_folder = "wildcamera_dataset_random/full_dataset/labels"
             for file in os.listdir(label_folder):
                 os.remove(os.path.join(label_folder, file))
@@ -173,7 +155,6 @@ def normalize_bbox(bbox, image_width, image_height) -> list[float]:
 def print_non_matching():
     """function that prints the names of images that do not have a corresponding label file and vice versa."""
     try:
-        # this image 8fd0a444-92d5-11e9-9988-000d3a74c7de2 should not have a labell file 
         image_files = os.listdir("wildcamera_dataset_random/full_dataset/images")
         label_files = os.listdir("wildcamera_dataset_random/full_dataset/labels")
         image_ids = [f.split(".")[0] for f in image_files]
@@ -285,13 +266,6 @@ def get_lenght():
         logging.error(f"Error printing length of images and labels: {e}")
         return
     
-# create_label_files()
-
-# print_non_matching()
-# get_lenght()
-# find_file_not_image()
-# remove_ds_store_from_folder()
-# get_lenght()
 
 # remove_image_annotation_from_json()
 # remove_image_without_annotations_from_json()
