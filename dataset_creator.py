@@ -19,9 +19,6 @@ import collections
 import cv2
 import itertools
 import requests
-
-
-import os
 import shutil
 import random
 from pathlib import Path
@@ -149,7 +146,7 @@ class DatasetCreator():
             return
 
 
-    def pick_n_categories_and_clean_dataset(self, data:dict, max_attempts:int, class_count:int, annotation_amount:int, num_bb_per_class:int, method:str) -> Union[list[str], None]:
+    def pick_n_categories_and_clean_dataset(self, data:dict, max_attempts:int, class_count:int, annotation_amount:int, num_bb_per_class:int) -> Union[list[str], None]:
         """Selects n classes from the JSON data and cleans the dataset. Provided a class_count the
         function will attempt to select n classes from the JSON data. The function will also
         remove any classes that were not selected and their annotations and images. If the function
@@ -185,7 +182,15 @@ class DatasetCreator():
             total_bounding_boxes = 0
             explicitly_provided_classes = set(self.filter_classes) if self.filter_classes else set()
             iterations = 0
-            if method == "random":
+            if len(explicitly_provided_classes) == class_count:
+                remaining_category_ids = {c["id"] for c in data["categories"] if c["name"] in explicitly_provided_classes}
+                data["categories"] = [c for c in data["categories"] if c["id"] in remaining_category_ids]
+                data["annotations"] = [a for a in data["annotations"] if a["category_id"] in remaining_category_ids]
+                with open(self.copied_filename, 'w') as json_file:
+                    json.dump(data, json_file, indent=4)
+                logging.info(f"Selected classes: {explicitly_provided_classes}")
+                return list(explicitly_provided_classes)
+            else: 
                 for class_name in explicitly_provided_classes:
                     category = next((c for c in data["categories"] if c["name"] == class_name), None)
                     if category:
@@ -236,72 +241,10 @@ class DatasetCreator():
                     json.dump(data, json_file, indent=4)
                 logging.info(f"Selected classes: {selected_classes}, Total images: {len(data['images'])}, Total categories: {len(data['categories'])}, Total annotations: {len(data['annotations'])}")
                 return list(selected_classes)
-            elif method == "bb_size":
-                class_single_bb_images = {}
-                for annotation in data["annotations"]:
-                    class_id = annotation["category_id"]
-                    if class_id in class_single_bb_images:
-                        class_single_bb_images[class_id].add(annotation["image_id"])
-                    else:
-                        class_single_bb_images[class_id] = {annotation["image_id"]}
-                while len(selected_classes) < class_count and iterations < max_attempts:
-                    if len(data["categories"]) < class_count - len(selected_classes):
-                        logging.warning("Not enough classes available to meet the specified count.")
-                        break
-                    while (total_bounding_boxes < annotation_amount) and (iterations < max_attempts):
-                        logging.info("Attempting to select more classes to meet annotation amount.")
-                        selected_classes.clear()
-                        total_bounding_boxes = 0
-                        min_single_bb_images = (annotation_amount / class_count) * 2 
-                        for _ in range(10):
-                            while True:
-                                random_class = random.choice(data["categories"])
-                                class_id = random_class["id"]
-                                class_name = random_class["name"]
-                                if (
-                                    class_id in class_single_bb_images
-                                    and class_name not in selected_classes
-                                    and class_name not in self.blacklist
-                                    and class_name not in explicitly_provided_classes
-                                    and len(class_single_bb_images[class_id]) >= min_single_bb_images
-                                ):
-                                    break
-                            num_single_bb_images = len(class_single_bb_images[class_id])
-                            selected_classes.add(class_name)
-                            total_bounding_boxes += num_single_bb_images
-                            logging.info(
-                                f"Added class '{class_name}' with {num_single_bb_images} images with single bounding boxes."
-                            )
-                        iterations += 1
-                    if total_bounding_boxes >= annotation_amount and len(selected_classes) == class_count:
-                        break
-                remaining_category_ids = {c["id"] for c in data["categories"] if c["name"] in selected_classes}
-                data["categories"] = [c for c in data["categories"] if c["id"] in remaining_category_ids]
-                data["annotations"] = [a for a in data["annotations"] if a["category_id"] in remaining_category_ids]
-                with open(self.copied_filename, 'w') as json_file:
-                    json.dump(data, json_file, indent=4)
-                with open(self.copied_filename, 'r') as json_file:
-                    data = json.load(json_file)
-                    annotated_image_ids = {annotation["image_id"] for annotation in data["annotations"]}
-                    data["images"] = [img for img in data["images"] if img["id"] in annotated_image_ids]
-                with open(self.copied_filename, 'w') as json_file:
-                    json.dump(data, json_file, indent=4)
-                logging.info(f"Selected classes: {selected_classes}, Total images: {len(data['images'])}, Total categories: {len(data['categories'])}, Total annotations: {len(data['annotations'])}")
-                return list(selected_classes)
-            elif method == "random" and len(explicitly_provided_classes) == class_count:
-                remaining_category_ids = {c["id"] for c in data["categories"] if c["name"] in explicitly_provided_classes}
-                data["categories"] = [c for c in data["categories"] if c["id"] in remaining_category_ids]
-                data["annotations"] = [a for a in data["annotations"] if a["category_id"] in remaining_category_ids]
-                with open(self.copied_filename, 'w') as json_file:
-                    json.dump(data, json_file, indent=4)
-                logging.info(f"Selected classes: {explicitly_provided_classes}")
-                return list(explicitly_provided_classes)
         except Exception as e:
             logging.error(f"Error selecting classes: {e}")
             return None
 
-
-    def delete_multiple_bounding_boxes(self, data:dict) -> None:
         """Deletes images with multiple bounding boxes.
 
         Args:
@@ -332,7 +275,7 @@ class DatasetCreator():
             return
         
 
-    def random_filter(self, data: dict, target_count: int) -> None:
+    def random_filter(self, data: dict, target_count: int, class_count: int) -> None:
         """Filters the dataset based on the selected classes and class limit.
 
         Args:
@@ -347,11 +290,24 @@ class DatasetCreator():
         if not target_count or not isinstance(target_count, int):
             ValueError("Target count must be a non-empty integer.")
         try:
-            class_limit = (target_count / 10) * 2
+            filtered_annotations = [
+                annotation for annotation in data["annotations"]
+                if any(c["id"] == annotation["category_id"] and c["name"] in self.categories for c in data["categories"])
+            ]
+            filtered_image_ids = {annotation["image_id"] for annotation in filtered_annotations}
+            filtered_images = [img for img in data["images"] if img["id"] in filtered_image_ids]
+            data["annotations"] = filtered_annotations
+            data["images"] = filtered_images
+            with open(self.copied_filename, 'w') as json_file:
+                json.dump(data, json_file, indent=4)
+            logging.info(f"Filtered dataset with target count {target_count}")
+            data = json.load(open(self.copied_filename, 'r'))
+            class_limit = target_count // class_count * 2.5
             images = data["images"]
             category_counts = collections.Counter()
             selected_image_ids = set()
             while len(selected_image_ids) < target_count:
+                print(len(selected_image_ids))
                 image_id = random.choice([img["id"] for img in images])
                 category_id = next((a["category_id"] for a in data["annotations"] if a["image_id"] == image_id), None)
 
@@ -362,70 +318,15 @@ class DatasetCreator():
             removed_image_ids = set(img["id"] for img in images if img["id"] not in selected_image_ids)
             data["images"] = [img for img in images if img["id"] in selected_image_ids]
             data["annotations"] = [annotation for annotation in data["annotations"] if annotation["image_id"] not in removed_image_ids]
-
+            # update image count in categories
+            for category in data["categories"]:
+                category["count"] = category_counts[category["id"]]
             with open(self.copied_filename, 'w') as json_file:
                 json.dump(data, json_file, indent=4)
-            logging.info(f"Filtered dataset with method random and target count {target_count}")
+            logging.info(f"Filtered dataset with target count {target_count}")
         except Exception as e:
             logging.error(f"Error filtering dataset: {e}")
             return
-
-
-    def select_similar_bounding_boxes(self, data:dict, target_count:int, area_or_aspect:str) -> list[str]:
-        """
-        Selects images with the most similar IQR of bounding boxes from a JSON.
-
-        Args:
-            data: A dictionary containing the JSON data.
-            target_count: The number of images to select.
-            area_or_aspect: "area" or "aspect" to calculate size (default: "area").
-
-        Returns:
-            A list of image IDs with the most similar IQR of bounding boxes.
-        """
-        if not data or not isinstance(data, dict):
-            ValueError("Data must be a non-empty dictionary.")
-        if not target_count or not isinstance(target_count, int):
-            ValueError("Target count must be a non-empty integer.")
-        if area_or_aspect not in ["area", "aspect"]:
-            ValueError("Area or aspect must be either 'area' or 'aspect'.")
-        try:
-            image_bb_areas = {}
-            class_limit = (target_count / 10) * 2
-            for image in data["images"]:
-                image_id = image["id"]
-                annotation = next((a for a in data["annotations"] if a["image_id"] == image_id), None)
-                if annotation:
-                    bbox = annotation["bbox"]
-                    if area_or_aspect == "area":
-                        area = bbox[2] * bbox[3]
-                    else:
-                        area = bbox[2] / bbox[3]
-                    image_bb_areas[image_id] = (area, annotation["category_id"])
-            bb_areas = np.array([value[0] for value in image_bb_areas.values()])
-            q1 = np.percentile(bb_areas, 25)
-            q3 = np.percentile(bb_areas, 75)
-            selected_images = set()
-            category_counts = collections.Counter()
-            sorted_image_bb_areas = sorted(image_bb_areas.items(), key=lambda x: x[1][0], reverse=False)
-            while len(selected_images) < target_count:
-                for image_id, (abs_area, category_id) in sorted_image_bb_areas:
-                    if q1 < abs_area < q3 and category_counts[category_id] < class_limit:
-                        selected_images.add((image_id, category_id))
-                        category_counts[category_id] += 1
-                        logging.info(len(selected_images))
-                    if len(selected_images) == target_count:
-                        break
-            removed_image_ids = set(image_bb_areas.keys()) - set([image_id for image_id, _ in selected_images])
-            data["images"] = [img for img in data["images"] if img["id"] in [image_id for image_id, _ in selected_images]]
-            data["annotations"] = [annotation for annotation in data["annotations"] if annotation["image_id"] not in removed_image_ids]
-            with open(self.copied_filename, 'w') as json_file:
-                json.dump(data, json_file, indent=4)
-            logging.info(f"Filtered dataset with method {area_or_aspect} and target count {target_count}")
-            return selected_images
-        except Exception as e:
-            logging.error(f"Error filtering dataset: {e}")
-            return []
 
 
     def create_folders(self, parent_folder:str) -> None:
@@ -482,8 +383,8 @@ class DatasetCreator():
                 label_filename = f"{image_id}.txt"
                 label_path = os.path.join(self.dataset_folder, "train", "labels", label_filename)
                 with open(label_path, "a") as label_file:
-                    x_center = (bbox[0] + bbox[2]) / 2
-                    y_center = (bbox[1] + bbox[3]) / 2
+                    x_center = bbox[0] + (bbox[2] / 2)
+                    y_center = bbox[1] + (bbox[3] / 2)
                     width = bbox[2] 
                     height = bbox[3] 
                     label_file.write(f"{category_index} {x_center} {y_center} {width} {height}\n")
@@ -505,6 +406,7 @@ class DatasetCreator():
         if not data or not isinstance(data, dict):
             ValueError("Data must be a non-empty dictionary.")
         try:
+            print(data["categories"])
             class_distribution = {}
             for annotation in data["annotations"]:
                 category_id = annotation["category_id"]
@@ -534,54 +436,11 @@ class DatasetCreator():
                 [x_center_relative, y_center_relative, box_w_relative, box_h_relative]
         """
         x_center, y_center, box_w, box_h = bbox
-        x_center_relative = x_center / image_width
-        y_center_relative = y_center / image_height
+        x_center_relative = (x_center / image_width)
+        y_center_relative = (y_center / image_height)
         box_w_relative = box_w / image_width
         box_h_relative = box_h / image_height
         return [x_center_relative, y_center_relative, box_w_relative, box_h_relative]
-    
-        # x_center, y_center, box_w, box_h = bbox
-        # x_centre = (x_center + (x_center+box_w))/2
-        # y_centre = (y_center + (y_center+box_h))/2
-        # x_center_relative = x_centre / image_width
-        # y_center_relative = y_centre / image_height
-        # box_w_relative = box_w / image_width
-        # box_h_relative = box_h / image_height
-        # return [x_center_relative, y_center_relative, box_w_relative, box_h_relative]
-    
-
-    def download_image_non_async(self, image_url:str, parent_folder:str, folder:str, image_id:str) -> None:
-        """Downloads an image from a URL.
-        
-        Args:
-            image_url: The URL of the image to download.
-            parent_folder: The parent folder to save the image.
-            folder: The folder to save the image.
-            image_id: The ID of the image.
-            
-        Returns:
-            None
-        """
-        if not image_url or not isinstance(image_url, str):
-            ValueError("Image URL must be a non-empty string.")
-        if not parent_folder or not isinstance(parent_folder, str):
-            ValueError("Parent folder must be a non-empty string.")
-        if not folder or not isinstance(folder, str):
-            ValueError("Folder must be a non-empty string.")
-        if not image_id or not isinstance(image_id, str):
-            ValueError("Image ID must be a non-empty string.")
-        try:
-            image_path = os.path.join(parent_folder, folder, "images", image_id + ".jpg")
-            if os.path.exists(image_path):
-                logging.info(f"Image already downloaded: {image_id}")
-                return
-            image_data = requests.get(image_url, timeout=720).content
-            with open(image_path, "wb") as f:
-                f.write(image_data)
-            logging.info(f"Successfully downloaded image: {image_url}")
-        except Exception as e:
-            logging.error(f"Error downloading image: {e}")
-            return
         
 
     def normalize_single_bb(self, image_path, label_path) -> list[float]:
@@ -666,21 +525,21 @@ class DatasetCreator():
                     f.write(image_id + "\n")
 
 
-    async def download_images(self, train_split:int, valid_split:int, test_split:int, filename_not:str=None) -> list[str]:
+    async def download_images(self, train_split:int, test_split:int, dataset_name:str) -> list[str]:
         """Downloads images from a JSON file.
         
         Args:
             train_split: The percentage of images to use for training.
-            valid_split: The percentage of images to use for validation.
             test_split: The percentage of images to use for testing.
+            dataset_name: The name of the dataset.
             
         Returns:
             None
         """
         if not train_split or not isinstance(train_split, float):
             ValueError("Train split must be a non-empty float.")
-        if not valid_split or not isinstance(valid_split, float):
-            ValueError("Validation split must be a non-empty float.")
+        if not dataset_name or not isinstance(dataset_name, str):
+            ValueError("Dataset name must be a non-empty string.")
         if not test_split or not isinstance(test_split, float):
             ValueError("Test split must be a non-empty float.")
         try:
@@ -698,7 +557,7 @@ class DatasetCreator():
                     for image in image_chunk:
                         image_id = image["id"]
                         file_name = image["file_name"]
-                        image_url = f"https://lilablobssc.blob.core.windows.net/wcs-unzipped/{file_name}"
+                        image_url = f"https://lilawildlife.blob.core.windows.net/lila-wildlife/wcs-unzipped/{file_name}"
                         folder = "train"
                         tasks.append(self.download_image(session, image_url, self.dataset_folder, folder, image_id))
                     await asyncio.gather(*tasks)
@@ -713,32 +572,22 @@ class DatasetCreator():
             if self.failed_images:
                 for image_id in self.failed_images:
                     logging.info(f"Image could not be downlaoded: {image_id}")
+            self.split_dataset(data=data, train_split=train_split, test_split=test_split, dataset_name=dataset_name)
         except Exception as e:
             logging.error(f"Error downloading images: {e}")
         return self.failed_images
 
 
-    def split_dataset(self, data:dict, train_split:int, valid_split:int, test_split:int, filename_not:str=None) -> None:
-        """Splits the dataset into training, validation, and test sets.
-
-        Args:
-            data: The JSON data.
-            train_split: The percentage of images to use for training.
-            valid_split: The percentage of images to use for validation.
-            test_split: The percentage of images to use for testing.
-            filename_not: The filename of the dataset which's images can't be in the test set.
-
-        Returns:
-            None
-        """
+    def split_dataset(self, data: dict, train_split: float, test_split: float, dataset_name: str) -> None:
+        """Splits the dataset into training, validation, and test sets."""
         if not data or not isinstance(data, dict):
-            ValueError("Data must be a non-empty dictionary.")
-        if not train_split or not isinstance(train_split, float):
-            ValueError("Train split must be a non-empty float.")
-        if not valid_split or not isinstance(valid_split, float):
-            ValueError("Validation split must be a non-empty float.")
-        if not test_split or not isinstance(test_split, float):
-            ValueError("Test split must be a non-empty float.")
+            raise ValueError("Data must be a non-empty dictionary.")
+        if not isinstance(train_split, float) or not (0 < train_split < 1):
+            raise ValueError("Train split must be a float between 0 and 1.")
+        if not isinstance(test_split, float) or not (0 < test_split < 1):
+            raise ValueError("Test split must be a float between 0 and 1.")
+        if not dataset_name or not isinstance(dataset_name, str):
+            raise ValueError("Dataset name must be a non-empty string.")
         try:
             logging.getLogger().setLevel(logging.INFO)
             all_images = [image["id"] for image in data["images"]]
@@ -748,38 +597,26 @@ class DatasetCreator():
                 if folder not in images:
                     images[folder] = []
                 images[folder].append(image)
-            total_split = train_split + valid_split + test_split
+            total_split = train_split + test_split
             epsilon = 1e-6
             if abs(total_split - 1) > epsilon:
-                raise ValueError("Train, validation, and test split ratios must add up to 1.")
+                raise ValueError("Train and test split ratios must add up to 1.")
             for name, images in images.items():
                 num_images = len(images)
                 logging.info(f"Total images: {num_images}")
-            if filename_not:
-                with open(filename_not, "r") as json_file:
-                    data = json.load(json_file)
-                    images_not = [img["id"] for img in data["images"]]
-            else:
-                images_not = []
             all_images = list(images)
-            test_size = int(num_images * (1 - train_split - valid_split))
-            test_images = [img for img in all_images if img not in images_not][:test_size]
-            all_images = list(set(all_images) - set(test_images))
-            val_size = int(num_images * valid_split)
-            val_images = random.sample(all_images, val_size)
-            all_images = list(set(all_images) - set(val_images))
-            for image in val_images:
-                os.rename(os.path.join("wildcamera_dataset_random", "train/images", image + ".jpg"), os.path.join("wildcamera_dataset_random", "valid/images", image + ".jpg"))
-                os.rename(os.path.join("wildcamera_dataset_random", "train/labels", image + ".txt"), os.path.join("wildcamera_dataset_random", "valid/labels", image + ".txt"))
+            test_size = int(num_images * test_split)
+            print(f"Test size: {test_size}")
+            test_images = random.sample(all_images, test_size)
             for image in test_images:
-                os.rename(os.path.join("wildcamera_dataset_random", "train/images", image + ".jpg"), os.path.join("wildcamera_dataset_random", "test/images", image + ".jpg"))
-                os.rename(os.path.join("wildcamera_dataset_random", "train/labels", image + ".txt"), os.path.join("wildcamera_dataset_random", "test/labels", image + ".txt"))
+                os.rename(os.path.join(dataset_name, "train/images", image + ".jpg"), os.path.join(dataset_name, "test/images", image + ".jpg"))
+                os.rename(os.path.join(dataset_name, "train/labels", image + ".txt"), os.path.join(dataset_name, "test/labels", image + ".txt"))
         except Exception as e:
-            logging.error(f"Error splitting dataset: {e}")
+            logging.info(f"Error splitting dataset: {e}")
             return
 
 
-    def create_dataset(self, filename:str, min_count:int, max_count:int, parent_folder:str, classes_count:int, image_amount:int, classes:list[str]=None, max_attempts:int=100, method:str="random", area_or_aspect:str="area") -> None:
+    def create_dataset(self, filename:str, min_count:int, max_count:int, parent_folder:str, classes_count:int, image_amount:int, classes:list[str]=None, max_attempts:int=100) -> None:
         """Creates a custom dataset from the JSON file.
 
         Args:
@@ -791,9 +628,6 @@ class DatasetCreator():
             image_amount: The number of images to be included in the new dataset.
             classes: A list of class names that have to be featured in the resulting dataset (optional).
             iterations: The number of iterations to attempt to select classes (optional).
-            method: The method to use for selecting images (random or bb_size). Default is random (optional).
-            area_or_aspect: The method to use for selecting bounding boxes (area or aspect) (optional).
-            filename_not: The filename of the dataset which's images can't be in the test set.
 
         Returns:
             None
@@ -810,10 +644,6 @@ class DatasetCreator():
             ValueError("Image amount must be a non-empty integer.")
         if not max_attempts or not isinstance(max_attempts, int):
             ValueError("Max attempts must be a non-empty integer.")
-        if not method or not isinstance(method, str):
-            ValueError("Method must be a non-empty string.")
-        if not area_or_aspect or not isinstance(area_or_aspect, str):
-            ValueError("Area or aspect must be a non-empty string.")
         if not parent_folder or not isinstance(parent_folder, str):
             ValueError("Parent folder must be a non-empty string.")
         try:
@@ -829,33 +659,18 @@ class DatasetCreator():
             )
             with open(self.copied_filename, 'r') as json_file:
                 data = json.load(json_file)
-            self.categories = self.pick_n_categories_and_clean_dataset(data=data, max_attempts=max_attempts, class_count=classes_count, annotation_amount=image_amount, num_bb_per_class=min_count, method=method)
+            self.categories = self.pick_n_categories_and_clean_dataset(data=data, max_attempts=max_attempts, class_count=classes_count, annotation_amount=image_amount, num_bb_per_class=min_count)
             with open(self.copied_filename, 'r') as json_file:
                 data = json.load(json_file)
-            if method == "random":
-                self.random_filter(data=data, target_count=image_amount)
-                logging.info(f"Created dataset with method {method} and target count {image_amount}")
-            elif method == "bb_size":
-                self.delete_multiple_bounding_boxes(data=data)
-                with open(self.copied_filename, 'r') as json_file:
-                    data = json.load(json_file)
-                self.select_similar_bounding_boxes(data=data, target_count=image_amount, area_or_aspect=area_or_aspect)
-                logging.info(f"Created dataset with method {method} and target count {image_amount}")
+            print("Cleaning dataset...")
+            self.random_filter(data=data, target_count=image_amount, class_count=classes_count)
+            logging.info(f"Created dataset target count {image_amount}")
             with open(self.copied_filename, 'r') as json_file:
                 data = json.load(json_file)
             logging.info(f"Dataset created with {len(data['images'])} images.")
             logging.info(f"Dataset created with {len(data['categories'])} categories.")
             logging.info(f"Dataset created with {len(data['annotations'])} annotations.")
             self.check_class_distribution(data=data)
-            while True:
-                user_input = input("Press Enter to continue creating the dataset, or 'q' to quit: ").lower()
-                if user_input == '':
-                    break
-                elif user_input == 'q':
-                    logging.info("Dataset creation cancelled.")
-                    return
-                else:
-                    print("Invalid input. Please enter 'q' to quit or press Enter to continue.")
             self.create_folders(parent_folder=parent_folder)
             self.create_label_files()
         except Exception as e:
@@ -879,25 +694,22 @@ class DatasetCreator():
             ValueError("K splits must be a non-empty integer.")
         try:
             logging.getLogger().setLevel(logging.INFO)
-            dataset_name = dataset_name
-            k_splits = k_splits
-            dataset_path = dataset_name
-            logging.info(f"Length of train folder (before): {len(os.listdir(os.path.join(dataset_path, 'train', 'images')))}")
-            logging.info(f"Length of train folder (before): {len(os.listdir(os.path.join(dataset_path, 'train', 'labels')))}")
-            logging.info(f"Length of val folder (before): {len(os.listdir(os.path.join(dataset_path, 'valid', 'images')))}")
-            logging.info(f"Length of val folder (before): {len(os.listdir(os.path.join(dataset_path, 'valid', 'labels')))}")
-            # self.organize_dataset(dataset_path=dataset_path, keep_percent=0.0)
-            logging.info(f"Length of train folder images (after): {len(os.listdir(os.path.join(dataset_path, 'train', 'images')))}")
-            logging.info(f"Length of train folder labels(after): {len(os.listdir(os.path.join(dataset_path, 'train', 'labels')))}")
-            logging.info(f"Length of val folder images (after): {len(os.listdir(os.path.join(dataset_path, 'valid', 'images')))}")
-            logging.info(f"Length of val folder labels (after): {len(os.listdir(os.path.join(dataset_path, 'valid', 'labels')))}")
-            logging.info(f"Length of full dataset folder images (after): {len(os.listdir(os.path.join(dataset_path, 'full_dataset', 'images')))}")
-            logging.info(f"Length of full dataset folder labels (after): {len(os.listdir(os.path.join(dataset_path, 'full_dataset', 'labels')))}")
-            labels_df, classes, cls_idx, indx, labels  = self.get_labels_df(dataset_path=dataset_path)
+            logging.info(f"Length of train folder (before): {len(os.listdir(os.path.join(dataset_name, 'train', 'images')))}")
+            logging.info(f"Length of train folder (before): {len(os.listdir(os.path.join(dataset_name, 'train', 'labels')))}")
+            logging.info(f"Length of val folder (before): {len(os.listdir(os.path.join(dataset_name, 'valid', 'images')))}")
+            logging.info(f"Length of val folder (before): {len(os.listdir(os.path.join(dataset_name, 'valid', 'labels')))}")
+            self.organize_dataset(dataset_path=dataset_name, keep_percent=0.0)
+            logging.info(f"Length of train folder images (after): {len(os.listdir(os.path.join(dataset_name, 'train', 'images')))}")
+            logging.info(f"Length of train folder labels(after): {len(os.listdir(os.path.join(dataset_name, 'train', 'labels')))}")
+            logging.info(f"Length of val folder images (after): {len(os.listdir(os.path.join(dataset_name, 'valid', 'images')))}")
+            logging.info(f"Length of val folder labels (after): {len(os.listdir(os.path.join(dataset_name, 'valid', 'labels')))}")
+            logging.info(f"Length of full dataset folder images (after): {len(os.listdir(os.path.join(dataset_name, 'full_dataset', 'images')))}")
+            logging.info(f"Length of full dataset folder labels (after): {len(os.listdir(os.path.join(dataset_name, 'full_dataset', 'labels')))}")
+            labels_df, classes, cls_idx, indx, labels  = self.get_labels_df(dataset_path=dataset_name)
             logging.info(f"Done creating labels dataframe.")
-            fold_lbl_distrb, folds_df, save_path = self.create_k_folds(k_splits=k_splits, dataset_path=dataset_path, labels_df=labels_df, classes=classes, cls_idx=cls_idx, indx=indx, labels=labels)
+            fold_lbl_distrb, folds_df, save_path = self.create_k_folds(k_splits=k_splits, dataset_path=dataset_name, labels_df=labels_df, classes=classes, cls_idx=cls_idx, indx=indx, labels=labels)
             logging.info(f"Done creating k-fold split.")
-            self.split_to_csv(fold_lbl_distrb=fold_lbl_distrb, folds_df=folds_df, save_path=save_path, dataset_path=dataset_path)
+            self.split_to_csv(fold_lbl_distrb=fold_lbl_distrb, folds_df=folds_df, save_path=save_path, dataset_path=dataset_name)
             logging.info(f"Done saving k-fold split to CSV.")
         except Exception as e:
             logging.error(f"Error creating k-fold split: {e}")
@@ -1067,110 +879,19 @@ class DatasetCreator():
         fold_lbl_distrb.to_csv(save_path / "kfold_label_distribution.csv")
 
 
-# Create the dataset pipeline
-# dataset_creator = DatasetCreator()
-# dataset = dataset_creator.create_dataset(
-#     filename="wcs_20220205_bboxes_with_classes 2_1.json",
-#     min_count=100,
-#     max_count=50000,
-#     classes={'dasyprocta punctata', 'pecari tajacu', 'leopardus pardalis', 'mitu tuberosum', 'loxodonta africana', 'aepyceros melampus', 'equus quagga', 'madoqua guentheri', 'unknown bird', "crax rubra"},
-#     classes_count=10,
-#     image_amount=20000,
-#     max_attempts=100,
-#     area_or_aspect="area",
-#     parent_folder="wildcamera_dataset_random",
-#     method="random"
-# )
-
-
-# Download the images pipeline
-# asyncio.run(dataset_creator.download_images(train_split=0.8, valid_split=0.2, test_split=0.0))
-# dataset_creator = DatasetCreator(copied_filename="wcs_20220205_bboxes_with_classes 2_1_20240402212650_Mq6SLJWc.json",dataset_folder="wildcamera_dataset_random")
-# filename_not = "wcs_20220205_bboxes_with_classes 2_1_20240401214607_QGQGLFWf.json"
-# asyncio.run(dataset_creator.download_images(train_split=0.8, valid_split=0.1, test_split=0.1, filename_not=filename_not))
-# with open(dataset_creator.copied_filename, "r") as f:
-    # data = json.load(f)
-# dataset_creator.split_dataset(data=data, train_split=0.8, valid_split=0.1, test_split=0.1, filename_not="wcs_20220205_bboxes_with_classes 2_1_20240401214607_QGQGLFWf.json")
-
-
-# download single image pipeline
-# dataset_creator = DatasetCreator()
-# dataset_creator.download_image_non_async("https://lilablobssc.blob.core.windows.net/wcs-unzipped/animals/0547/1705.jpg", "wildcamera_dataset_bb_size", "train", "8fd0a444-92d5-11e9-9988-000d3a74c7de")
-# image_path = os.path.join("wildcamera_dataset_bb_size", "train/images", "8fd0a444-92d5-11e9-9988-000d3a74c7de" + ".jpg")
-# label_path = os.path.join("wildcamera_dataset_bb_size", "train/labels", "8fd0a444-92d5-11e9-9988-000d3a74c7de" + ".txt")
-# dataset_creator.normalize_single_bb(image_path, label_path)
-# with open("wcs_20220205_bboxes_with_classes 2_1_20240402212650_Mq6SLJWc.json", "r") as f:
-    # data = json.load(f)
-# dataset_creator.split_dataset(data=data, train_split=0.8, valid_split=0.1, test_split=0.1, filename_not="wcs_20220205_bboxes_with_classes 2_1_20240401214607_QGQGLFWf.json")
-
-
-# dataset_creator = DatasetCreator()
-# dataset_creator.create_k_fold_split(dataset_name="wildcamera_dataset_bb_size", k_splits=3)
-
-
-# Test the length of the dataset folders
-path = 'wildcamera_dataset_bb_size/train/images'
-files = os.listdir(path)
-print(len(files))
-path = 'wildcamera_dataset_bb_size/train/labels'
-files = os.listdir(path)
-print(len(files))
-path = 'wildcamera_dataset_bb_size/valid/images'
-files = os.listdir(path)
-print(len(files))
-path = 'wildcamera_dataset_bb_size/valid/labels'
-files = os.listdir(path)
-print(len(files))
-path = 'wildcamera_dataset_bb_size/test/images'
-files = os.listdir(path)
-print(len(files))
-path = 'wildcamera_dataset_bb_size/test/labels'
-files = os.listdir(path)
-print(len(files))
-path = 'wildcamera_dataset_bb_size/full_dataset/images'
-files = os.listdir(path)
-print(len(files))
-path = 'wildcamera_dataset_bb_size/full_dataset/labels'
-files = os.listdir(path)
-print(len(files))
-
-
-print("Split 1")
-path = 'wildcamera_dataset_bb_size/2024-05-01_3-Fold_Cross-val/split_1/full'
-files = os.listdir(path)
-print(len(files))
-path = 'wildcamera_dataset_bb_size/2024-05-01_3-Fold_Cross-val/split_1/train/labels'
-files = os.listdir(path)
-print(len(files))
-path = 'wildcamera_dataset_bb_size/2024-05-01_3-Fold_Cross-val/split_1/val/images'
-files = os.listdir(path)
-print(len(files))
-path = 'wildcamera_dataset_bb_size/2024-05-01_3-Fold_Cross-val/split_1/val/labels'
-files = os.listdir(path)
-print(len(files))
-print("Split 2")
-path = 'wildcamera_dataset_bb_size/2024-05-01_3-Fold_Cross-val/split_2/full'
-files = os.listdir(path)
-print(len(files))
-path = 'wildcamera_dataset_bb_size/2024-05-01_3-Fold_Cross-val/split_2/train/labels'
-files = os.listdir(path)
-print(len(files))
-path = 'wildcamera_dataset_bb_size/2024-05-01_3-Fold_Cross-val/split_1/val/images'
-files = os.listdir(path)
-print(len(files))
-path = 'wildcamera_dataset_bb_size/2024-05-01_3-Fold_Cross-val/split_1/val/labels'
-files = os.listdir(path)
-print(len(files))
-print("split 3")
-path = 'wildcamera_dataset_bb_size/2024-05-01_3-Fold_Cross-val/split_3/full'
-files = os.listdir(path)
-print(len(files))
-path = 'wildcamera_dataset_bb_size/2024-05-01_3-Fold_Cross-val/split_3/train/labels'
-files = os.listdir(path)
-print(len(files))
-path = 'wildcamera_dataset_bb_size/2024-05-01_3-Fold_Cross-val/split_1/val/images'
-files = os.listdir(path)
-print(len(files))
-path = 'wildcamera_dataset_bb_size/2024-05-01_3-Fold_Cross-val/split_1/val/labels'
-files = os.listdir(path)
-print(len(files))
+## Create the dataset pipeline
+dataset_creator = DatasetCreator()
+dataset_name = "wcs_camera_dataset"
+dataset = dataset_creator.create_dataset(
+    filename="wcs_20220205_bboxes_with_classes 2_1.json",
+    min_count=100,
+    max_count=50000,
+    classes={},
+    classes_count=6,
+    image_amount=500,
+    max_attempts=100,
+    parent_folder=dataset_name
+)
+## Check for images that couldn't be downloaded via failed_images.txt and consider how to proceed
+asyncio.run(dataset_creator.download_images(train_split=0.8, test_split=0.2, dataset_name=dataset_name))
+dataset_creator.create_k_fold_split(dataset_name=dataset_name, k_splits=3)
